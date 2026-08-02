@@ -30,10 +30,19 @@ async function run() {
     // Databases
     const db = client.db("bistroDB");
     const menuCollection = db.collection("menu");
+    const cartCollection = db.collection("carts");
 
+    // Menu API endpoint
     app.get("/menu", async (req, res) => {
       const cursor = await menuCollection.find().toArray();
       res.send(cursor);
+    });
+
+    // Carts POST API endpoint
+    app.post("/carts", async (req, res) => {
+      const cartItem = req.body;
+      const result = await cartCollection.insertOne(cartItem);
+      res.send(result);
     });
 
     // Send a ping to confirm a successful connection
@@ -63,3 +72,16 @@ app.listen(port, () => {
 // for (let i = 0; i <= 100; i++) {
 //   console.log("hi", i);
 // }
+
+/*
+* ==========================================
+  NAMING CONVENTION
+  ==========================================
+* 
+  app.get("/users")
+  app.get("/users/:id")
+  app.post("/users")
+  app.put("/users/:id")
+  app.patch("/users/:id")
+  app.delete("/users/:id")
+*/
