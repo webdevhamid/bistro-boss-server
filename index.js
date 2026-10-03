@@ -47,7 +47,7 @@ const verifyToken = (req, res, next) => {
   // Get the token from the request header
   const token = req.headers.authorization.split(" ")[1];
 
-  // Check if the token not exist
+  // Check if the token is not exist
   if (!token) {
     return res.status(401).send({ message: "Unauthorized Access!" });
   }
@@ -76,21 +76,22 @@ async function run() {
     const reviewCollection = db.collection("reviews");
     const userCollection = db.collection("users");
 
-    // Check if the user is an admin after the token verification
+    // Check if the user is an admin after the token verification (verify admin middleware)
     const verifyAdmin = async (req, res, next) => {
       const email = req.decodedInfo?.email;
       const query = { email: email };
       const user = await userCollection.findOne(query);
-      const isAdmin = user?.role?.includes("admin");
+      const isAdmin = user?.role === "admin";
 
       if (!isAdmin) {
         return res.status(403).send({ message: "Forbidden Access!" });
       }
 
+      // If the user in an admin
       next();
     };
 
-    // Create a JWT token
+    // Create a JWT token (POST API ENDPOINT)
     app.post("/jwt", async (req, res) => {
       const user = req.body;
       // Generate/sign token
@@ -99,7 +100,7 @@ async function run() {
       res.send({ token });
     });
 
-    // Save user data (POST API endpoint)
+    // Save user's data (POST API endpoint)
     app.post("/users", async (req, res) => {
       const user = req.body;
       // Insert email if the user doesn't exist
@@ -118,7 +119,6 @@ async function run() {
     // Retrieving all users data using GET method
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await userCollection.find().toArray();
-      console.log(req);
       res.send(result);
     });
 
@@ -135,13 +135,13 @@ async function run() {
       const email = req.params.email;
       const query = { email: email };
 
-      // Check is the current user is same as the decoded user with their email
+      // Check is the current user is the same as the decoded user with their email
       if (email !== req.decodedInfo?.email) {
         return res.status(401).send({ message: "Unauthorized access" });
       }
 
       const user = await userCollection.findOne(query);
-      const isAdmin = user?.role?.includes("admin");
+      const isAdmin = user?.role === "admin";
 
       res.send({ isAdmin });
     });
@@ -163,13 +163,58 @@ async function run() {
       res.send(result);
     });
 
+    // Menu related APIs
     // Menu API endpoint
     app.get("/menu", async (req, res) => {
-      const cursor = await menuCollection.find().toArray();
+      const cursor = await menuCollection.find().sort({ _id: -1 }).toArray();
       res.send(cursor);
     });
 
-    // Carts POST API endpoint
+    // Add a new menu item (Admin only)
+    app.post("/menu", verifyToken, verifyAdmin, async (req, res) => {
+      const menuItem = req.body;
+      const result = await menuCollection.insertOne(menuItem);
+      res.send(result);
+    });
+
+    // Delete a new menu item
+    app.delete("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const itemId = req.params.id;
+      const query = { _id: new ObjectId(itemId) };
+      const result = await menuCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // Get a specific menu item based on id
+    app.get("/menu/:id", async (req, res) => {
+      const itemId = req.params.id;
+      console.log(itemId);
+      const query = { _id: new ObjectId(itemId) };
+      const result = await menuCollection.findOne(query);
+      res.send(result);
+    });
+
+    // Update menu API
+    app.patch("/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const itemId = req.params.id;
+      const updatedItem = req.body;
+      const filter = { _id: new ObjectId(itemId) };
+      const updatedDoc = {
+        $set: {
+          name: updatedItem.name,
+          recipe: updatedItem.recipe,
+          image: updatedItem.image,
+          category: updatedItem.category,
+          price: updatedItem.price,
+        },
+      };
+
+      console.log(updatedItem);
+      const result = await menuCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    // Carts (POST API endpoint)
     app.post("/carts", async (req, res) => {
       const cartItem = req.body;
       const result = await cartCollection.insertOne(cartItem);
@@ -189,7 +234,6 @@ async function run() {
       try {
         const itemId = req.params.id;
         const query = { _id: new ObjectId(itemId) };
-        console.log(itemId);
         const result = await cartCollection.deleteOne(query);
         res.send(result);
       } catch (error) {
