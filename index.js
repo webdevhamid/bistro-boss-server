@@ -4,6 +4,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // Middlewares
 app.use(cors());
@@ -11,7 +12,8 @@ app.use(express.json());
 
 // Connecting with mongoDB
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.w1xw1.mongodb.net/?appName=Cluster0`;
+// const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.w1xw1.mongodb.net/?appName=Cluster0`;
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.w1xw1.mongodb.net/`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
@@ -75,6 +77,7 @@ async function run() {
     const cartCollection = db.collection("carts");
     const reviewCollection = db.collection("reviews");
     const userCollection = db.collection("users");
+    const paymentCollection = db.collection("payments");
 
     // Check if the user is an admin after the token verification (verify admin middleware)
     const verifyAdmin = async (req, res, next) => {
@@ -239,6 +242,237 @@ async function run() {
       } catch (error) {
         res.status(400).send({ error: "Invalid item ID" });
       }
+    });
+
+    // Stripe Payment Intent
+    app.post("/create-payment-intent", async (req, res) => {
+      const { price } = req.body;
+      const amount = Math.round(price * 100);
+
+      console.log(amount);
+      // console.log(amount, "Amount inside payment intent");
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+      });
+
+      app.post("/payments", async (req, res) => {
+        const payment = req.body;
+        const paymentResult = await paymentCollection.insertOne(payment);
+
+        // Carefully delete each item from the cart
+        const query = {
+          _id: {
+            // Selecting all the cartIds and created new ObjectId() for all
+            $in: payment.cartIds.map((id) => new ObjectId(id)),
+          },
+        };
+
+        const deletedCartResult = await cartCollection.deleteMany(query);
+        console.log("Payment info", payment);
+
+        res.send({ paymentResult, deletedCartResult });
+      });
+
+      // const session = await stripe.checkout.sessions.create({
+      //   line_items: [
+      //     {
+      //       price_data: {
+      //         currency: "usd",
+      //         product_data: {
+      //           name: productName,
+      //         },
+      //         unit_amount: price,
+      //       },
+      //     },
+      //   ],
+      //   mode: "payment",
+      // });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
+
+    app.get("/payments/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      const query = { email: email };
+
+      if (email !== req.decodedInfo.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
+      const result = await paymentCollection.find(query).toArray();
+
+      res.send(result);
+    });
+
+    // app.post("/create-checkout-session", async (req, res) => {
+    //   const session = await stripe.checkout.sessions.create({
+    //     line_items: [
+    //       {
+    //         // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+    //         price: "price_1UQlaMBQML6PeO2JF6SPiHHM",
+    //         quantity: 1,
+    //       },
+    //     ],
+    //     mode: "payment",
+    //     success_url: `http://localhost:3000/checkout?success=true`,
+    //     // Provide a name (for example, hosted_web_0001) to label this Checkout integration and measure its conversion independently
+    //     // integration_identifier: "{{INTEGRATION_ID}}",
+    //     // payment_method_types: ["card"],
+    //   });
+
+    //   res.redirect(303, session.url);
+    // });
+
+    // Stats or Analytics
+    app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
+      const users = await userCollection.estimatedDocumentCount();
+      const menuItems = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+
+      // Poor way to aggregate revenue
+      // const payments = await paymentCollection.find().toArray();
+      // const revenue = payments.reduce((total, payment) => total + payment.price, 0);
+
+      // const revenue = revenueResult[0]?.totalRevenue || 0;
+
+      // const result = await paymentCollection
+      //   .aggregate([
+      //     {
+      //       $facet: {
+      //         // 1) Total revenue from payments
+      //         totalRevenue: [
+      //           {
+      //             $group: {
+      //               _id: null,
+      //               totalRevenue: { $sum: "$price" },
+      //             },
+      //           },
+      //         ],
+
+      //         // 2) Quantity and revenue by item/category
+      //         itemStats: [
+      //           { $unwind: "$menuIds" },
+      //           {
+      //             $lookup: {
+      //               from: "menuCollection",
+      //               localField: "menuIds",
+      //               foreignField: "_id",
+      //               as: "menuItem",
+      //             },
+      //           },
+      //           { $unwind: "$menuItem" },
+      //           {
+      //             $group: {
+      //               _id: {
+      //                 category: "$menuItem.category",
+      //                 itemId: "$menuItem._id",
+      //                 itemName: "$menuItem.name",
+      //               },
+      //               quantity: { $sum: 1 },
+      //               revenue: { $sum: "$menuItem.price" },
+      //             },
+      //           },
+      //           // Final output
+      //           {
+      //             $project: {
+      //               _id: 0,
+      //               category: "$_id.category",
+      //               itemId: "$_id.itemId",
+      //               itemName: "$_id.itemName",
+      //               quantity: 1,
+      //               revenue: 1,
+      //             },
+      //           },
+      //         ],
+      //       },
+      //     },
+      //   ])
+      //   .toArray();
+
+      // Better way to aggregate revenue
+
+      const result = await paymentCollection
+        .aggregate([
+          // Running multiple independent sub-pipelines in parallel using the $facet operator
+          {
+            $facet: {
+              // Pipeline 1: Calculate total revenue
+              totalRevenue: [
+                {
+                  $group: {
+                    _id: null,
+                    totalRevenue: { $sum: "$price" },
+                  },
+                },
+              ],
+
+              // Pipeline 2: Calculate item Quantity and revenue by category
+              itemStats: [
+                // Split purchased menu items into one document per item
+                {
+                  $unwind: "$menuIds",
+                },
+
+                // Convert string ID into ObjectId
+                {
+                  $set: {
+                    menuObjectId: {
+                      $toObjectId: "$menuIds",
+                    },
+                  },
+                },
+
+                // Join each purchased item to the menu collection
+                {
+                  $lookup: {
+                    from: "menu",
+                    localField: "menuObjectId",
+                    foreignField: "_id",
+                    as: "menuItem",
+                  },
+                },
+                // Unwind matched new items
+                {
+                  $unwind: "$menuItem",
+                },
+
+                {
+                  $group: {
+                    _id: "$menuItem.category",
+                    quantity: { $sum: 1 },
+                    revenue: { $sum: "$menuItem.price" },
+                  },
+                },
+
+                {
+                  $project: {
+                    _id: 0,
+                    category: "$_id",
+                    quantity: "$quantity",
+                    revenue: "$revenue",
+                  },
+                },
+              ],
+            },
+          },
+        ])
+        .toArray();
+
+      const analytics = result[0];
+      const totalRevenue = analytics?.totalRevenue[0]?.totalRevenue || 0;
+      const itemStats = analytics?.itemStats || [];
+
+      res.send({
+        users,
+        menu: menuItems,
+        orders,
+        revenue: totalRevenue,
+        itemStats,
+      });
     });
 
     // Send a ping to confirm a successful connection
